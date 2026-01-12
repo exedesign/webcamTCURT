@@ -12,6 +12,14 @@ from facefusion.uis.core import get_ui_component
 from facefusion.uis.types import File
 from facefusion.vision import unpack_resolution
 
+# Virtual Camera Output
+try:
+	from facefusion.virtual_camera_output import get_virtual_camera, stop_virtual_camera
+	VIRTUAL_CAMERA_AVAILABLE = True
+except ImportError:
+	VIRTUAL_CAMERA_AVAILABLE = False
+	print("[INFO] Virtual Camera modülü bulunamadı (pyvirtualcam gerekli)")
+
 SOURCE_FILE : Optional[gradio.File] = None
 WEBCAM_IMAGE : Optional[gradio.Image] = None
 WEBCAM_START_BUTTON : Optional[gradio.Button] = None
@@ -88,6 +96,14 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 
 	camera_capture = get_local_camera_capture(webcam_device_id)
 	stream = None
+	virtual_camera = None
+
+	# Virtual Camera için OBS output başlat
+	if webcam_mode == 'inline' and VIRTUAL_CAMERA_AVAILABLE:
+		webcam_width, webcam_height = unpack_resolution(webcam_resolution)
+		virtual_camera = get_virtual_camera(webcam_width, webcam_height, webcam_fps)
+		if virtual_camera:
+			print(f"[OBS] Virtual Camera aktif - OBS'de 'OBS Virtual Camera' kaynak olarak ekleyin")
 
 	if webcam_mode in [ 'udp', 'v4l2' ]:
 		stream = open_stream(webcam_mode, webcam_resolution, webcam_fps) # type:ignore[arg-type]
@@ -99,17 +115,28 @@ def start(webcam_device_id : int, webcam_mode : WebcamMode, webcam_resolution : 
 		camera_capture.set(cv2.CAP_PROP_FPS, webcam_fps)
 
 		for capture_frame in multi_process_capture(camera_capture, webcam_fps):
-			capture_frame = cv2.cvtColor(capture_frame, cv2.COLOR_BGR2RGB)
+			capture_frame_rgb = cv2.cvtColor(capture_frame, cv2.COLOR_BGR2RGB)
+
+			# Virtual Camera'ya frame gönder (OBS için)
+			if virtual_camera and virtual_camera.is_active():
+				virtual_camera.send_frame(capture_frame)  # BGR formatında gönder (içerde RGB'ye çevrilecek)
 
 			if webcam_mode == 'inline':
-				yield capture_frame
+				yield capture_frame_rgb
 			else:
 				try:
-					stream.stdin.write(capture_frame.tobytes())
+					stream.stdin.write(capture_frame_rgb.tobytes())
 				except Exception:
 					pass
 
 
 def stop() -> gradio.Image:
+	# Virtual Camera'yı durdur
+	if VIRTUAL_CAMERA_AVAILABLE:
+		try:
+			stop_virtual_camera()
+		except Exception:
+			pass
+	
 	clear_camera_pool()
 	return gradio.Image(value = None)
